@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# ZCode config & plans
+.zcode/
+
+# Misc
+*.log
+
+# State files (persisted max_id for cms_poller)
+state/
