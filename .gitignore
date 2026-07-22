@@ -23,5 +23,8 @@ venv/
 # State files (persisted max_id for cms_poller)
 state/
 
+# Personal AGENTS.md (user-wide instructions, not project-specific)
+AGENTS.md
+
 # Telegram TL;DR version (redundant, full version in docs/)
 research_report_tg.md
