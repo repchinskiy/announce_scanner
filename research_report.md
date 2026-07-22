@@ -68,7 +68,7 @@ Tier: SpeedTrial (0ms delay, REDACTED ticker) и FreeDelayed (+240ms, full paylo
 
 - Сторонний коммерческий WebSocket-провайдер для pre-market detection
 - Использует API-ключи: `dsk_<64 hex>`
-- AWS Tokyo co-location (как и мы)
+- AWS Tokyo (тот же регион, что и наш VPS)
 - **Наши тесты: CLWS стабильно быстрее нашего WS на 2-3 секунды**
 - `dispatchTimestampUs ≈ detectedTimestampUs` (internal latency ≈ 0μs)
 - **НЕ отдаёт `publishDate`** — сильный косвенный признак, что источник — CMS polling, а не Binance WS
