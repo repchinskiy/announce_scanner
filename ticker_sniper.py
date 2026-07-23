@@ -49,7 +49,7 @@ import sys
 import time
 from typing import Any
 
-import aiohttp
+from http_client import create_http_client, classify_cache_status
 
 # Load .env from the script's directory if python-dotenv is available.
 try:
@@ -138,21 +138,10 @@ def extract_symbols(body: Any) -> set[str]:
     return {entry.get("symbol", "") for entry in body if entry.get("symbol")}
 
 
-def _classify_cache_status(resp: aiohttp.ClientResponse) -> str:
-    """Classify response cache freshness (same logic as exchangeinfo_poller)."""
-    x_cache = resp.headers.get("X-Cache") or resp.headers.get("x-cache")
-    if x_cache:
-        return x_cache
-    cc = (resp.headers.get("Cache-Control") or "").lower()
-    if "no-cache" in cc or "no-store" in cc or "must-revalidate" in cc:
-        return "Direct (no CDN cache)"
-    return "Unknown"
-
-
 # ---------------------------------------------------------------------------
 # Core
 # ---------------------------------------------------------------------------
-async def fetch_one(session: aiohttp.ClientSession, host: str) -> tuple[str, set[str], int, str, int]:
+async def fetch_one(session, host: str) -> tuple[str, set[str], int, str, int]:
     """Fetch /api/v3/ticker/price from one host.
 
     Returns (host, symbols, recv_ms, cache_status, status_code).
@@ -160,15 +149,17 @@ async def fetch_one(session: aiohttp.ClientSession, host: str) -> tuple[str, set
     """
     url = f"https://{host}/api/v3/ticker/price"
     try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            recv_ms = now_ms()
-            if resp.status == 429:
-                return host, set(), recv_ms, "RateLimited", 429
-            if resp.status != 200:
-                return host, set(), recv_ms, "Error", resp.status
-            body = await resp.json()
-            cache_status = _classify_cache_status(resp)
-            return host, extract_symbols(body), recv_ms, cache_status, resp.status
+        resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        recv_ms = now_ms()
+        if resp.status_code == 429:
+            return host, set(), recv_ms, "RateLimited", 429
+        if resp.status_code != 200:
+            return host, set(), recv_ms, "Error", resp.status_code
+        body = resp.body
+        if body is None:
+            return host, set(), recv_ms, "Error", 0
+        cache_status = classify_cache_status(resp.headers)
+        return host, extract_symbols(body), recv_ms, cache_status, resp.status_code
     except Exception:
         return host, set(), 0, "Error", 0
 
@@ -198,6 +189,7 @@ async def poll_once(session: aiohttp.ClientSession,
             continue
         if status_code != 200:
             log.warning(f"[SNIPER] HTTP {status_code}  host={host}")
+            notifier.reconnect("SNIPER", f"HTTP {status_code} (host={host})")
             stats.setdefault("err_count", 0)
             stats["err_count"] += 1
             continue
@@ -224,7 +216,7 @@ async def poll_once(session: aiohttp.ClientSession,
 
 
 async def run_oneshot() -> set[str]:
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)) as session:
+    async with create_http_client(timeout=HTTP_TIMEOUT_S) as session:
         new_syms, _ = await poll_once(session, known=set(), stats={})
         return new_syms
 
@@ -234,6 +226,8 @@ async def run_continuous() -> None:
     known: set[str] = set(state.get("symbols", []))
     stats: dict[str, Any] = {"total": {}, "cache": {}, "rate_limited": {}}
     cycle = 0
+    prev_err = 0
+    prev_total_reqs = 0
 
     # 429 backoff state
     backoff_s = 0.0  # 0 = normal rate
@@ -249,7 +243,7 @@ async def run_continuous() -> None:
         + f"interval: {POLL_INTERVAL_MS}ms",
     )
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)) as session:
+    async with create_http_client(timeout=HTTP_TIMEOUT_S) as session:
         # Bootstrap: seed baseline silently (no emits).
         if not known:
             baseline = set()
@@ -315,8 +309,23 @@ async def run_continuous() -> None:
                 mode = f"BACKOFF={backoff_s:.0f}s" if backoff_s > 0 else "normal"
                 log.info(
                     f"[SNIPER] STATS  cycle={cycle}  mode={mode}  known={len(known)}  "
+                    f"err={stats.get('err_count', 0)}  "
                     f"[{', '.join(parts)}]"
                 )
+                # Notify Telegram on new errors (only if rate > 5% since last STATS).
+                current_err = stats.get('err_count', 0)
+                current_total = sum(stats['total'].values()) if stats['total'] else 0
+                delta_err = current_err - prev_err
+                delta_reqs = current_total - prev_total_reqs
+                if delta_err > 0 and delta_reqs > 0 and (delta_err / delta_reqs) > 0.05:
+                    rate = delta_err / delta_reqs * 100
+                    log.warning(f"[SNIPER] {delta_err} new errors ({rate:.0f}% of requests, total: {current_err})")
+                    notifier.reconnect("SNIPER", f"{delta_err} new errors ({rate:.0f}% rate), total {current_err}")
+                elif delta_err > 0 and delta_reqs == 0:
+                    log.warning(f"[SNIPER] {delta_err} new errors (100% of requests, total: {current_err})")
+                    notifier.reconnect("SNIPER", f"{delta_err} new errors (100% rate), total {current_err}")
+                prev_err = current_err
+                prev_total_reqs = current_total
 
 
 # ---------------------------------------------------------------------------

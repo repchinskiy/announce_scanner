@@ -50,7 +50,7 @@ try:
 except ImportError:
     pass
 
-import aiohttp
+from http_client import create_http_client
 
 # Local import: shared Telegram notifier (fire-and-forget, no-op if unconfigured).
 from notifier import notifier
@@ -200,11 +200,11 @@ async def poll_one(session: aiohttp.ClientSession,
     )
 
     try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            recv_ms = now_ms()
-            body = await resp.json()
-            cache_status = resp.headers.get("X-Cache", "?")
-            status_code = resp.status
+        resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        recv_ms = now_ms()
+        body = resp.body
+        cache_status = resp.headers.get("X-Cache", "?")
+        status_code = resp.status_code
     except Exception:
         stats.setdefault("err_count", 0)
         stats["err_count"] += 1
@@ -298,7 +298,7 @@ async def run_oneshot() -> dict[int, int]:
     state = load_state()
     max_ids: dict[int, int] = {cid: int(state.get(f"cat{cid}", {}).get("max_id", 0))
                                for cid in CATALOG_IDS}
-    async with aiohttp.ClientSession() as session:
+    async with create_http_client(timeout=5.0) as session:
         for cid in CATALOG_IDS:
             max_ids[cid], _ = await poll_catalog(session, cid, max_ids[cid], {})
     return max_ids
@@ -332,7 +332,7 @@ async def run_continuous() -> None:
         f"interval: {POLL_INTERVAL_S}s base / {POLL_FAST_INTERVAL_S}s fast x{POLL_FAST_CYCLES}",
     )
 
-    async with aiohttp.ClientSession() as session:
+    async with create_http_client(timeout=5.0) as session:
         # Bootstrap: populate max_id per catalog without emitting (catch-up).
         for cid in CATALOG_IDS:
             known[cid], _ = await poll_catalog(session, cid, known[cid], stats, emit=False)

@@ -60,7 +60,7 @@ import sys
 import time
 from typing import Any
 
-import aiohttp
+from http_client import create_http_client, classify_cache_status
 
 # Load .env from the script's directory if python-dotenv is available.
 try:
@@ -167,48 +167,26 @@ async def fetch_one(session: aiohttp.ClientSession, host: str) -> tuple[str, set
     """
     url = f"https://{host}/api/v3/exchangeInfo"
     try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            recv_ms = now_ms()
-            if resp.status == 429:
-                log.warning(f"[EXCHANGE] 429 rate-limited  host={host}")
-                notifier.reconnect("EXCHANGE", f"429 rate-limited (host={host})")
-                return host, set(), recv_ms, "RateLimited"
-            if resp.status != 200:
-                log.warning(f"[EXCHANGE] HTTP {resp.status}  host={host}")
-                notifier.reconnect("EXCHANGE", f"HTTP {resp.status} (host={host})")
-                return host, set(), recv_ms, "Error"
-            body = await resp.json()
-            cache_status = _classify_cache_status(resp)
-            return host, extract_symbols(body), recv_ms, cache_status
+        resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        recv_ms = now_ms()
+        if resp.status_code == 429:
+            log.warning(f"[EXCHANGE] 429 rate-limited  host={host}")
+            notifier.reconnect("EXCHANGE", f"429 rate-limited (host={host})")
+            return host, set(), recv_ms, "RateLimited"
+        if resp.status_code != 200:
+            log.warning(f"[EXCHANGE] HTTP {resp.status_code}  host={host}")
+            notifier.reconnect("EXCHANGE", f"HTTP {resp.status_code} (host={host})")
+            return host, set(), recv_ms, "Error"
+        body = resp.body
+        if body is None:
+            return host, set(), recv_ms, "Error"
+        cache_status = classify_cache_status(resp.headers)
+        return host, extract_symbols(body), recv_ms, cache_status
     except Exception:
         return host, set(), 0, "Error"
 
 
-def _classify_cache_status(resp: aiohttp.ClientResponse) -> str:
-    """Classify a response's cache freshness for stats purposes.
-
-    CloudFront exposes `X-Cache: Hit/Miss/RefreshHit/Error from cloudfront`.
-    Other front-ends (GCP GLB, raw nginx) do not expose a comparable header,
-    so we infer freshness from `Cache-Control`:
-      - `no-cache` / `no-store` / `must-revalidate` set by origin → response
-        is NOT served from any cache → equivalent to "Miss" (fresh).
-      - otherwise we cannot tell → "Unknown".
-    """
-    # CloudFront — use its explicit X-Cache header verbatim.
-    x_cache = resp.headers.get("X-Cache") or resp.headers.get("x-cache")
-    if x_cache:
-        return x_cache
-
-    # Non-CloudFront (GCP GLB, raw nginx, etc.). Origin's Cache-Control tells
-    # us whether the response is allowed to be cached anywhere.
-    cc = (resp.headers.get("Cache-Control") or "").lower()
-    if "no-cache" in cc or "no-store" in cc or "must-revalidate" in cc:
-        return "Direct (no CDN cache)"
-
-    return "Unknown"
-
-
-async def poll_once(session: aiohttp.ClientSession,
+async def poll_once(session,  # HttpClient (aiohttp or curl_cffi)
                     known: set[str],
                     stats: dict[str, Any]) -> set[str]:
     """Poll all hosts in parallel, emit new symbols, return set of new symbols.
@@ -225,6 +203,9 @@ async def poll_once(session: aiohttp.ClientSession,
         stats["total"][host] += 1
         stats.setdefault("cache", {}).setdefault(host, {})
         stats["cache"][host][cache_status] = stats["cache"][host].get(cache_status, 0) + 1
+        if cache_status in ("RateLimited", "Error"):
+            stats.setdefault("err_count", 0)
+            stats["err_count"] += 1
         merged.update(symbols)
 
     # Emit new symbols
@@ -251,7 +232,7 @@ async def poll_once(session: aiohttp.ClientSession,
 
 async def run_oneshot() -> set[str]:
     """Single poll against an empty known set — emits everything seen."""
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)) as session:
+    async with create_http_client(timeout=HTTP_TIMEOUT_S) as session:
         return await poll_once(session, known=set(), stats={})
 
 
@@ -260,6 +241,8 @@ async def run_continuous() -> None:
     known: set[str] = set(state.get("symbols", []))
     stats: dict[str, Any] = {"total": {}, "cache": {}}
     cycle = 0
+    prev_err = 0
+    prev_total_reqs = 0
 
     log.info(f"[EXCHANGE] announce_scanner  hosts={HOSTS}  interval={POLL_INTERVAL_S}s  "
              f"state={STATE_FILE}")
@@ -270,7 +253,7 @@ async def run_continuous() -> None:
         + f"interval: {POLL_INTERVAL_S}s",
     )
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)) as session:
+    async with create_http_client(timeout=HTTP_TIMEOUT_S) as session:
         # Bootstrap: if state is empty, seed the baseline silently (no emits).
         if not known:
             baseline = set()
@@ -310,8 +293,23 @@ async def run_continuous() -> None:
                     parts.append(f"{h}:{total[h]}({bucket_str})")
                 log.info(
                     f"[EXCHANGE] STATS  cycle={cycle}  known={len(known)}  "
+                    f"err={stats.get('err_count', 0)}  "
                     f"[{', '.join(parts)}]"
                 )
+                # Notify Telegram on new errors (only if rate > 5% since last STATS).
+                current_err = stats.get('err_count', 0)
+                current_total = sum(stats['total'].values()) if stats['total'] else 0
+                delta_err = current_err - prev_err
+                delta_reqs = current_total - prev_total_reqs
+                if delta_err > 0 and delta_reqs > 0 and (delta_err / delta_reqs) > 0.05:
+                    rate = delta_err / delta_reqs * 100
+                    log.warning(f"[EXCHANGE] {delta_err} new errors ({rate:.0f}% of requests, total: {current_err})")
+                    notifier.reconnect("EXCHANGE", f"{delta_err} new errors ({rate:.0f}% rate), total {current_err}")
+                elif delta_err > 0 and delta_reqs == 0:
+                    log.warning(f"[EXCHANGE] {delta_err} new errors (100% of requests, total: {current_err})")
+                    notifier.reconnect("EXCHANGE", f"{delta_err} new errors (100% rate), total {current_err}")
+                prev_err = current_err
+                prev_total_reqs = current_total
 
             await asyncio.sleep(sleep_s)
 

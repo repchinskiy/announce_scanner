@@ -50,7 +50,7 @@ import sys
 import time
 from typing import Any
 
-import aiohttp
+from http_client import create_http_client
 
 # Load .env from the script's directory if python-dotenv is available.
 try:
@@ -196,11 +196,11 @@ async def poll_one(session: aiohttp.ClientSession,
     )
 
     try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            recv_ms = now_ms()
-            body = await resp.json()
-            cache_status = resp.headers.get("X-Cache", "?")
-            status_code = resp.status
+        resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        recv_ms = now_ms()
+        body = resp.body
+        cache_status = resp.headers.get("X-Cache", "?")
+        status_code = resp.status_code
     except Exception:
         stats.setdefault("err_count", 0)
         stats["err_count"] += 1
@@ -296,7 +296,7 @@ async def run_oneshot() -> dict[int, int]:
             state.get(f"cat{cid}"), dict) else int(state.get(f"cat{cid}", {}).get("max_id", 0))
         for cid in CATALOG_IDS
     }
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)) as session:
+    async with create_http_client(timeout=HTTP_TIMEOUT_S) as session:
         for cid in CATALOG_IDS:
             entry = state.get(f"cat{cid}", {})
             known = int(entry.get("max_id", 0)) if isinstance(entry, dict) else 0
@@ -328,7 +328,7 @@ async def run_continuous() -> None:
         f"interval: {POLL_INTERVAL_S}s",
     )
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)) as session:
+    async with create_http_client(timeout=HTTP_TIMEOUT_S) as session:
         # Bootstrap: populate max_id per catalog without emitting (catch-up).
         for cid in CATALOG_IDS:
             known[cid], _ = await poll_catalog(session, cid, known[cid], stats, emit=False)
