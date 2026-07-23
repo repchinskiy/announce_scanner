@@ -172,6 +172,11 @@ async def fetch_one(session: aiohttp.ClientSession, host: str) -> tuple[str, set
             if resp.status == 429:
                 log.warning(f"[EXCHANGE] 429 rate-limited  host={host}")
                 notifier.reconnect("EXCHANGE", f"429 rate-limited (host={host})")
+                return host, set(), recv_ms, "RateLimited"
+            if resp.status != 200:
+                log.warning(f"[EXCHANGE] HTTP {resp.status}  host={host}")
+                notifier.reconnect("EXCHANGE", f"HTTP {resp.status} (host={host})")
+                return host, set(), recv_ms, "Error"
             body = await resp.json()
             cache_status = _classify_cache_status(resp)
             return host, extract_symbols(body), recv_ms, cache_status

@@ -69,6 +69,7 @@ log = get_logger()
 # Config
 # ---------------------------------------------------------------------------
 CMS_BASE = "https://www.binance.com/bapi/composite/v1/public/cms/article/catalog/list/query"
+          # https://www.binance.com/bapi/composite/v1/public/cms/article/catalog/list/query?catalogId=48&pageNo=1&pageSize=22
 # Cache busting via random pageSize per-request.
 # Each cycle generates NUM_CACHE_KEYS random values for parallel requests.
 # Same env var as cms_apex_poller.py for consistency.
@@ -208,6 +209,13 @@ async def poll_one(session: aiohttp.ClientSession,
     if status_code == 429:
         log.warning(f"[CMS_COMPOSITE] 429 rate-limited  cat={catalog_id}  key={key_label}")
         notifier.reconnect("CMS_COMPOSITE", f"429 rate-limited (cat={catalog_id}, key={key_label})")
+        stats.setdefault("err_count", 0)
+        stats["err_count"] += 1
+    elif status_code != 200:
+        log.warning(f"[CMS_COMPOSITE] HTTP {status_code}  cat={catalog_id}  key={key_label}  cache={cache_status}")
+        notifier.reconnect("CMS_COMPOSITE", f"HTTP {status_code} (cat={catalog_id}, key={key_label})")
+        stats.setdefault("err_count", 0)
+        stats["err_count"] += 1
 
     stat_key = f"cat{catalog_id}/{key_label}"
     stats.setdefault("total", {}).setdefault(stat_key, 0)

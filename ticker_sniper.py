@@ -162,6 +162,10 @@ async def fetch_one(session: aiohttp.ClientSession, host: str) -> tuple[str, set
     try:
         async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
             recv_ms = now_ms()
+            if resp.status == 429:
+                return host, set(), recv_ms, "RateLimited", 429
+            if resp.status != 200:
+                return host, set(), recv_ms, "Error", resp.status
             body = await resp.json()
             cache_status = _classify_cache_status(resp)
             return host, extract_symbols(body), recv_ms, cache_status, resp.status
@@ -193,6 +197,9 @@ async def poll_once(session: aiohttp.ClientSession,
             stats["rate_limited"][host] = stats["rate_limited"].get(host, 0) + 1
             continue
         if status_code != 200:
+            log.warning(f"[SNIPER] HTTP {status_code}  host={host}")
+            stats.setdefault("err_count", 0)
+            stats["err_count"] += 1
             continue
 
         merged.update(symbols)

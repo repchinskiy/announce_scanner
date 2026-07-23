@@ -213,6 +213,13 @@ async def poll_one(session: aiohttp.ClientSession,
     if status_code == 429:
         log.warning(f"[CMS_APEX] 429 rate-limited  cat={catalog_id}  key={key_label}")
         notifier.reconnect("CMS_APEX", f"429 rate-limited (cat={catalog_id}, key={key_label})")
+        stats.setdefault("err_count", 0)
+        stats["err_count"] += 1
+    elif status_code != 200:
+        log.warning(f"[CMS_APEX] HTTP {status_code}  cat={catalog_id}  key={key_label}  cache={cache_status}")
+        notifier.reconnect("CMS_APEX", f"HTTP {status_code} (cat={catalog_id}, key={key_label})")
+        stats.setdefault("err_count", 0)
+        stats["err_count"] += 1
 
     stat_key = f"cat{catalog_id}/{key_label}"
     stats.setdefault("total", {}).setdefault(stat_key, 0)
