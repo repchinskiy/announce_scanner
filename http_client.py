@@ -116,7 +116,7 @@ class _CurlCffiClient:
         from curl_cffi import AsyncSession
 
         if impersonate is None:
-            impersonate = os.environ.get("HTTP_CURL_IMPERSONATE", "chrome124")
+            impersonate = os.environ.get("HTTP_CURL_IMPERSONATE", "chrome146")
         self._session = AsyncSession(timeout=timeout, impersonate=impersonate)
 
     async def get(self, url: str, headers: dict[str, str] | None = None) -> HttpResponse:
