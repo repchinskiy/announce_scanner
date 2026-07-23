@@ -172,6 +172,8 @@ async def poll_one(session: aiohttp.ClientSession,
         f"&pageSize={page_size}"
     )
 
+    stat_key = f"cat{catalog_id}/{key_label}"
+
     try:
         resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
         recv_ms = now_ms()
@@ -181,6 +183,8 @@ async def poll_one(session: aiohttp.ClientSession,
     except Exception:
         stats.setdefault("err_count", 0)
         stats["err_count"] += 1
+        stats.setdefault("total", {}).setdefault(stat_key, 0)
+        stats["total"][stat_key] += 1
         return known_max_id, "Error"
 
     if status_code == 429:
@@ -194,7 +198,6 @@ async def poll_one(session: aiohttp.ClientSession,
         stats.setdefault("err_count", 0)
         stats["err_count"] += 1
 
-    stat_key = f"cat{catalog_id}/{key_label}"
     stats.setdefault("total", {}).setdefault(stat_key, 0)
     stats["total"][stat_key] += 1
     stats.setdefault("cache", {}).setdefault(stat_key, {})
