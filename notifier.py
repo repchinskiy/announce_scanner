@@ -289,10 +289,20 @@ class Notifier:
         self._enqueue(text)
 
     def reconnect(self, component: str, reason: str = "") -> None:
-        """🟡 connection dropped / reconnecting (liveness + debug)."""
-        text = f"🟡 <b>{component}</b> reconnecting"
-        if reason:
-            text += f"\n<pre>\n{reason}\n</pre>"
+        """connection issue — rate-limit, HTTP error, or elevated error rate.
+
+        Icon is chosen based on *reason* content:
+          ⏳ — 429 rate-limited
+          🔴 — HTTP error (403, 500, …) or network error
+          🟡 — elevated error rate (aggregated stats check)
+        """
+        if "429" in reason:
+            icon = "\u23F3"  # ⏳
+        elif "HTTP" in reason or "new errors" in reason.lower():
+            icon = "\U0001F534"  # 🔴
+        else:
+            icon = "\U0001F7E1"  # 🟡
+        text = f"{icon} <b>{component}</b> {reason}" if reason else f"{icon} <b>{component}</b> reconnecting"
         self._enqueue(text)
 
     def announcement(self,
