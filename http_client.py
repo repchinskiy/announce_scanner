@@ -176,6 +176,7 @@ def create_http_client(
     """
     if backend is None:
         backend = os.environ.get("HTTP_BACKEND", "aiohttp")
+    backend = backend.strip().split("#")[0].strip()
 
     cls = _BACKENDS.get(backend)
     if cls is None:
