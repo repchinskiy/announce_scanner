@@ -34,60 +34,61 @@ with a tag (`WS`, `WS2`, `CMS_APEX`, `CMS_CATALOG`, `CMS_COMPOSITE`,
 across sources.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         announce_scanner                             │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  announce_ws_client.py       ←── WS push API ──→  target <100 ms    │
-│  (primary channel)                wss://api.binance.com/sapi/wss     │
-│                                   HMAC-SHA256 signed subscription    │
-│                                   topic: com_announcement_en          │
-│                                   filter: catalogId in WS_CATALOG_IDS │
-│                                                                      │
-│  announce_ws2_client.py      ←── WS push (pub) ──→  target <100 ms  │
-│  (secondary WS channel)          wss://stream.binance.com:9443/ws/   │
-│                                   !announcements@arr (undocumented)   │
-│                                   no auth, public stream             │
-│                                                                      │
-│  cms_apex_poller.py          ←── CMS REST apex ──→  fallback ~60-120s│
-│  (fallback / comparison)         /bapi/apex/.../article/list/query  │
-│                                   CloudFront-cached, 5 pageSizes     │
-│                                   adaptive interval (base + burst)    │
-│                                   state: ./state/cms_state.json       │
-│                                                                      │
-│  cms_apex_catalog_poller.py  ←── CMS REST catalog ──→  comparison   │
-│  (catalog endpoint)              /bapi/apex/.../catalog/list/query  │
-│                                   flat articles, no releaseDate      │
-│                                   state: ./state/catalog_state.json   │
-│                                                                      │
-│  cms_composite_poller.py     ←── CMS REST composite ──→  comparison │
-│  (cache-behavior comparison)      /bapi/composite/.../catalog/list   │
-│                                   random pageSize 10..49 cache-buster│
-│                                   60s interval (Binance IP-ban limit)│
-│                                   state: ./state/composite_state.json│
-│                                                                      │
-│  exchangeinfo_poller.py      ←── market data ──→  ~1-5 s            │
-│  (backup / early signal)         GET /api/v3/exchangeInfo           │
-│                                   3 hosts in parallel:               │
-│                                     api.binance.com (CloudFront/AWS) │
-│                                     api-gcp.binance.com (GCP GLB)    │
-│                                     api4.binance.com (direct nginx)  │
+┌──────────────────────────────────────────────────────────────────────────┐
+│                             announce_scanner                             │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  announce_ws_client.py       ←── WS push API ──→  target <100 ms         │
+│  (primary channel)                wss://api.binance.com/sapi/wss         │
+│                                   HMAC-SHA256 signed subscription        │
+│                                   topic: com_announcement_en             │
+│                                   filter: catalogId in WS_CATALOG_IDS    │
+│                                                                          │
+│  announce_ws2_client.py      ←── WS push (pub) ──→  target <100 ms       │
+│  (secondary WS channel)          wss://stream.binance.com:9443/ws/       │
+│                                   !announcements@arr (undocumented)      │
+│                                   no auth, public stream                 │
+│                                                                          │
+│  cms_apex_poller.py          ←── CMS REST apex ──→  fallback ~60-120s    │
+│  (fallback / comparison)         /bapi/apex/.../article/list/query       │
+│                                   CloudFront-cached, 5 pageSizes         │
+│                                   adaptive interval (base + burst)       │
+│                                   state: ./state/cms_state.json          │
+│                                                                          │
+│  cms_apex_catalog_poller.py  ←── CMS REST catalog ──→  comparison        │
+│  (catalog endpoint)              /bapi/apex/.../catalog/list/query       │
+│                                   flat articles, no releaseDate          │
+│                                   state: ./state/catalog_state.json      │
+│                                                                          │
+│  cms_composite_poller.py     ←── CMS REST composite ──→  comparison      │
+│  (cache-behavior comparison)      /bapi/composite/.../catalog/list       │
+│                                   random pageSize 10..49 cache-buster    │
+│                                   60s interval (Binance IP-ban limit)    │
+│                                   state: ./state/composite_state.json    │
+│                                                                          │
+│  exchangeinfo_poller.py      ←── market data ──→  ~1-5 s                 │
+│  (backup / early signal)         GET /api/v3/exchangeInfo                │
+│                                   3 hosts in parallel:                   │
+│                                     api.binance.com (CloudFront/AWS)     │
+│                                     api-gcp.binance.com (GCP GLB)        │
+│                                     api4.binance.com (direct nginx)      │
 │                                   state: ./state/exchangeinfo_state.json │
-│                                                                      │
-│  ticker_sniper.py            ←── price ticker ──→  ~1ms + RTT       │
-│  (tradable-now signal)           GET /api/v3/ticker/price           │
-│                                   lightweight ~150KB (vs 17MB exg)   │
-│                                   3 hosts in parallel, default 1 Hz  │
-│                                   adaptive 429 backoff               │
-│                                   state: ./state/ticker_sniper_state.json │
-│                                                                      │
-│  cryptolisting_client.py    ←── CL WS push ──→  0 ms / +240 ms      │
-│  (co-located benchmark)          wss://cryptolisting.ws              │
-│                                   X-API-Key header (dsk_...)         │
-│                                   SpeedTrial (CLWS) + FreeDelayed (CLWD)│
-│                                                                      │
-│  notifier.py — shared Telegram notifications (fire-and-forget)       │
-└──────────────────────────────────────────────────────────────────────┘
+│                                                                          │
+│  ticker_sniper.py            ←── price ticker ──→  ~1ms + RTT            │
+│  (tradable-now signal)           GET /api/v3/ticker/price                │
+│                                   lightweight ~150KB (vs 17MB exg)       │
+│                                   3 hosts in parallel, default 1 Hz      │
+│                                   adaptive 429 backoff                   │
+│                                   state: ./state/ticker_sniper_state.json│
+│                                                                          │
+│  cryptolisting_client.py    ←── CL WS push ──→  0 ms / +240 ms           │
+│  (co-located benchmark)          wss://cryptolisting.ws                  │
+│                                   X-API-Key header (dsk_...)             │
+│                                   SpeedTrial (CLWS) + FreeDelayed (CLWD) │
+│                                                                          │
+│  notifier.py — shared Telegram notifications (fire-and-forget)           │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Why eight channels
