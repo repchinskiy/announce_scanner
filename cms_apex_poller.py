@@ -50,7 +50,7 @@ try:
 except ImportError:
     pass
 
-from http_client import create_http_client
+from http_client import create_http_client, get_backend
 
 # Local import: shared Telegram notifier (fire-and-forget, no-op if unconfigured).
 from notifier import notifier
@@ -102,17 +102,18 @@ ADAPTIVE_TRIGGERS = set(
 )
 
 # Cache busting via random pageSize per-request.
-# Valid pageSizes: 1,2,3,5,10,15,20,50. Using full range 1..49 for max variety.
-# Each cycle generates NUM_CACHE_KEYS random values — more distinct keys = higher
-# probability of at least one CloudFront cache miss.
-NUM_CACHE_KEYS = int(os.environ.get("CMS_NUM_CACHE_KEYS", "10"))
-CACHE_KEY_RANGE = (1, 49)  # inclusive
+# Apex CMS endpoint accepts: 1,2,3,5,10,15,20,50.
+# All 8 values in the pool — TTL is short so duplicates are fine.
+VALID_PAGE_SIZES = [1, 2, 3, 5, 10, 15, 20, 50]
+NUM_CACHE_KEYS = int(os.environ.get("CMS_NUM_CACHE_KEYS", "4"))
 
 
 def _generate_cache_keys(n: int = NUM_CACHE_KEYS) -> list[dict[str, int]]:
-    """Return *n* random cache-key dicts with unique pageSize values."""
-    sizes = random.sample(range(CACHE_KEY_RANGE[0], CACHE_KEY_RANGE[1] + 1),
-                          min(n, CACHE_KEY_RANGE[1] - CACHE_KEY_RANGE[0] + 1))
+    """Return *n* random cache-key dicts with unique pageSize values, sampled
+    from the valid pageSizes accepted by the apex CMS endpoint."""
+    pool = VALID_PAGE_SIZES[:]
+    random.shuffle(pool)
+    sizes = pool[:min(n, len(pool))]
     return [{"pageSize": s, "pageNo": 1} for s in sizes]
 
 
@@ -205,7 +206,7 @@ async def poll_one(session: aiohttp.ClientSession,
         resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
         recv_ms = now_ms()
         body = resp.body
-        cache_status = resp.headers.get("X-Cache", "?")
+        cache_status = resp.header("X-Cache", "-")
         status_code = resp.status_code
     except Exception:
         stats.setdefault("err_count", 0)
@@ -229,6 +230,23 @@ async def poll_one(session: aiohttp.ClientSession,
     stats["total"][stat_key] += 1
     stats.setdefault("cache", {}).setdefault(stat_key, {})
     stats["cache"][stat_key][cache_status] = stats["cache"][stat_key].get(cache_status, 0) + 1
+
+    # Re-request on RefreshHit: CloudFront returned stale data and is
+    # revalidating in the background. A follow-up request gets fresh data
+    # from origin directly (Miss or Hit).
+    if "refreshhit" in cache_status.lower() and status_code == 200:
+        try:
+            resp2 = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            recv_ms = now_ms()
+            body2 = resp2.body
+            cache_status2 = resp2.header("X-Cache", "-")
+            if resp2.status_code == 200:
+                body = body2
+                cache_status = cache_status2
+            stats["total"][stat_key] += 1
+            stats["cache"][stat_key][cache_status2] = stats["cache"][stat_key].get(cache_status2, 0) + 1
+        except Exception:
+            pass
 
     # Did this response trigger an adaptive burst? Match on the short token
     # that appears in the X-Cache header (Miss / RefreshHit).
@@ -262,7 +280,7 @@ async def poll_one(session: aiohttp.ClientSession,
             article_id=art_id,
             publish_ts_ms=pub_ms if isinstance(pub_ms, int) else None,
             recv_ts_ms=recv_ms,
-            extra={"cache": cache_status, "key": key_label} if cache_status else None,
+            extra={"cache": cache_status, "key": key_label, "backend": get_backend()} if cache_status else {"backend": get_backend()},
         )
         return art_id, triggered
 
@@ -331,7 +349,8 @@ async def run_continuous() -> None:
         "CMS_APEX",
         f"endpoint: {CMS_BASE}\n"
         f"catalogs: [{cats_str}]\n"
-        f"cache keys: {NUM_CACHE_KEYS} (random 1..49)\n"
+        f"cache keys: {NUM_CACHE_KEYS} (random 1..50)\n"
+        f"backend: {get_backend()}\n"
         f"interval: {POLL_INTERVAL_S}s base / {POLL_FAST_INTERVAL_S}s fast x{POLL_FAST_CYCLES}",
     )
 

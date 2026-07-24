@@ -49,7 +49,7 @@ import sys
 import time
 from typing import Any
 
-from http_client import create_http_client, classify_cache_status
+from http_client import create_http_client, classify_cache_status, get_backend
 
 # Load .env from the script's directory if python-dotenv is available.
 try:
@@ -209,7 +209,7 @@ async def poll_once(session: aiohttp.ClientSession,
             title=f"New tradable symbol: {sym}",
             latency_ms=None,  # no listed_at timestamp in ticker/price
             recv_ts_ms=recv_ms_now,
-            extra={"host": src_host} if src_host != "?" else None,
+            extra={"host": src_host, "backend": get_backend()} if src_host != "?" else {"backend": get_backend()},
         )
 
     return new_symbols, num_429
@@ -240,6 +240,7 @@ async def run_continuous() -> None:
         "SNIPER",
         f"endpoints:\n"
         + "".join(f"  https://{h}/api/v3/ticker/price\n" for h in HOSTS)
+        + f"backend: {get_backend()}\n"
         + f"interval: {POLL_INTERVAL_MS}ms",
     )
 

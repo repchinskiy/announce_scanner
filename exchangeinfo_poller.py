@@ -60,7 +60,7 @@ import sys
 import time
 from typing import Any
 
-from http_client import create_http_client, classify_cache_status
+from http_client import create_http_client, classify_cache_status, get_backend
 
 # Load .env from the script's directory if python-dotenv is available.
 try:
@@ -224,7 +224,7 @@ async def poll_once(session,  # HttpClient (aiohttp or curl_cffi)
             title=f"New symbol: {sym}",
             latency_ms=None,  # exchangeInfo has no listed_at field
             recv_ts_ms=recv_ms_now,
-            extra={"host": src_host} if src_host != "?" else None,
+            extra={"host": src_host, "backend": get_backend()} if src_host != "?" else {"backend": get_backend()},
         )
 
     return new_symbols
@@ -250,6 +250,7 @@ async def run_continuous() -> None:
         "EXCHANGE",
         f"endpoints:\n"
         + "".join(f"  https://{h}/api/v3/exchangeInfo\n" for h in HOSTS)
+        + f"backend: {get_backend()}\n"
         + f"interval: {POLL_INTERVAL_S}s",
     )
 

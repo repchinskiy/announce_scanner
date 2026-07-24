@@ -2,8 +2,11 @@
 # Install into the project venv:
 #   .venv/Scripts/python.exe -m pip install -r requirements.txt   (Windows)
 #   .venv/bin/python -m pip install -r requirements.txt            (Linux/macOS)
+#
+# Use `pip install -U -r requirements.txt` to upgrade to latest.
 
-websockets>=12.0
-python-dotenv>=1.0.0
-aiohttp>=3.9.0
+websockets>=14.0
+python-dotenv>=1.2.0
+aiohttp>=3.14.0
 curl-cffi>=0.15.0
+httpx[http2]>=0.28.0

@@ -2,8 +2,8 @@
 """
 http_client.py — unified HTTP client abstraction for announce_scanner
 
-Wraps aiohttp and curl_cffi behind a common interface, allowing backend
-switching via HTTP_BACKEND env var (default: aiohttp).
+Wraps aiohttp, curl_cffi and httpx behind a common interface, allowing
+backend switching via HTTP_BACKEND env var (default: aiohttp).
 
 Usage:
     from http_client import create_http_client
@@ -17,8 +17,12 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
+
+from log_setup import get_logger
+
+log = get_logger()
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +149,66 @@ class _CurlCffiClient:
 
 
 # ---------------------------------------------------------------------------
+# Backend: httpx (HTTP/2 capable)
+# ---------------------------------------------------------------------------
+
+class _HttpxClient:
+    """HTTP client backed by **httpx** (optional HTTP/2 multiplexing).
+
+    HTTP/2 connection is reused across requests (single TCP connection per
+    host), which reduces latency for multiple concurrent requests.
+    """
+
+    def __init__(self, timeout: float = 5.0) -> None:
+        import httpx
+
+        self._session = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            http2=True,
+        )
+
+    async def get(self, url: str, headers: dict[str, str] | None = None) -> HttpResponse:
+        start = time.time()
+        resp = await self._session.get(url, headers=headers)
+        elapsed_ms = int((time.time() - start) * 1000)
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        return HttpResponse(
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+            body=body,
+            elapsed_ms=elapsed_ms,
+        )
+
+    async def close(self) -> None:
+        await self._session.aclose()
+
+    async def __aenter__(self) -> _HttpxClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+
+# ---------------------------------------------------------------------------
 # Backend registry
 # ---------------------------------------------------------------------------
 
 _BACKENDS: dict[str, type] = {
     "aiohttp": _AiohttpClient,
     "curl_cffi": _CurlCffiClient,
+    "httpx": _HttpxClient,
 }
+
+
+def get_backend() -> str:
+    """Return the currently configured HTTP backend name.
+
+    Reads the ``HTTP_BACKEND`` environment variable (default ``"aiohttp"``).
+    """
+    return os.environ.get("HTTP_BACKEND", "aiohttp")
 
 
 def create_http_client(
@@ -163,7 +220,7 @@ def create_http_client(
     Parameters
     ----------
     backend:
-        One of ``"aiohttp"`` (default) or ``"curl_cffi"``.
+        One of ``"aiohttp"`` (default), ``"curl_cffi"`` or ``"httpx"``.
         If *None*, reads the ``HTTP_BACKEND`` environment variable
         (default ``"aiohttp"``).
     timeout:
@@ -185,4 +242,5 @@ def create_http_client(
             f"Available: {list(_BACKENDS)}",
         )
 
+    log.info("HTTP backend: %s", backend)
     return cls(timeout=timeout)

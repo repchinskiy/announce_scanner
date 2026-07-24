@@ -278,14 +278,14 @@ class Notifier:
         """🟢 service started — call from the run() coroutine."""
         text = f"🟢 <b>{component}</b> started"
         if detail:
-            text += f"\n<pre>\n{detail}\n</pre>"
+            text += f"\n<pre>{detail}</pre>"
         self._enqueue(text)
 
     def shutdown(self, component: str, detail: str = "") -> None:
         """🔴 service stopped — call on graceful exit / KeyboardInterrupt."""
         text = f"🔴 <b>{component}</b> stopped"
         if detail:
-            text += f"\n<pre>\n{detail}\n</pre>"
+            text += f"\n<pre>{detail}</pre>"
         self._enqueue(text)
 
     def reconnect(self, component: str, reason: str = "") -> None:
@@ -345,8 +345,7 @@ class Notifier:
 
         lines = [
             f"🚀 <b>NEW [{channel}]</b>",
-            "<pre>",
-            f"latency: <b>{latency_str}</b>",
+            f"<pre>latency: <b>{latency_str}</b>",
         ]
         # Timestamps block (all epoch ms, one per line, with HH:MM:SS.mmm).
         if publish_ts_ms is not None:
@@ -364,9 +363,7 @@ class Notifier:
         if extra:
             for k, v in extra.items():
                 lines.append(f"{k}: {v}")
-        lines.append("")
-        lines.append(title_safe)
-        lines.append("</pre>")
+        lines.append(f"{title_safe}</pre>")
 
         self._enqueue("\n".join(lines))
 

@@ -50,7 +50,7 @@ import sys
 import time
 from typing import Any
 
-from http_client import create_http_client
+from http_client import create_http_client, get_backend
 
 # Load .env from the script's directory if python-dotenv is available.
 try:
@@ -74,7 +74,7 @@ CMS_BASE = "https://www.binance.com/bapi/composite/v1/public/cms/article/catalog
 # Each cycle generates NUM_CACHE_KEYS random values for parallel requests.
 # Same env var as cms_apex_poller.py for consistency.
 NUM_CACHE_KEYS = int(os.environ.get("CMS_NUM_CACHE_KEYS", "5"))
-CACHE_KEY_RANGE = (1, 49)  # inclusive
+CACHE_KEY_RANGE = (1, 50)  # inclusive
 
 
 def _generate_cache_keys(n: int = NUM_CACHE_KEYS) -> list[dict[str, int]]:
@@ -201,7 +201,7 @@ async def poll_one(session: aiohttp.ClientSession,
         resp = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
         recv_ms = now_ms()
         body = resp.body
-        cache_status = resp.headers.get("X-Cache", "?")
+        cache_status = resp.header("X-Cache", "-")
         status_code = resp.status_code
     except Exception:
         stats.setdefault("err_count", 0)
@@ -225,6 +225,22 @@ async def poll_one(session: aiohttp.ClientSession,
     stats["total"][stat_key] += 1
     stats.setdefault("cache", {}).setdefault(stat_key, {})
     stats["cache"][stat_key][cache_status] = stats["cache"][stat_key].get(cache_status, 0) + 1
+
+    # Re-request on RefreshHit: CloudFront returns stale data and revalidates
+    # in the background. A follow-up request gets fresh data from origin.
+    if "refreshhit" in cache_status.lower() and status_code == 200:
+        try:
+            resp2 = await session.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            recv_ms = now_ms()
+            body2 = resp2.body
+            cache_status2 = resp2.header("X-Cache", "-")
+            if resp2.status_code == 200:
+                body = body2
+                cache_status = cache_status2
+            stats["total"][stat_key] += 1
+            stats["cache"][stat_key][cache_status2] = stats["cache"][stat_key].get(cache_status2, 0) + 1
+        except Exception:
+            pass
 
     if status_code != 200:
         return known_max_id, cache_status
@@ -253,7 +269,7 @@ async def poll_one(session: aiohttp.ClientSession,
             catalog_id=catalog_id,
             article_id=art_id,
             recv_ts_ms=recv_ms,
-            extra={"cache": cache_status, "page_size": page_size, "code": code},
+            extra={"cache": cache_status, "page_size": page_size, "code": code, "backend": get_backend()},
         )
         return art_id, cache_status
 
@@ -327,7 +343,8 @@ async def run_continuous() -> None:
         "CMS_COMPOSITE",
         f"endpoint: {CMS_BASE}\n"
         f"catalogs: [{cats_str}]\n"
-        f"cache keys: {NUM_CACHE_KEYS} (random 1..49)\n"
+        f"cache keys: {NUM_CACHE_KEYS} (random 1..50)\n"
+        f"backend: {get_backend()}\n"
         f"interval: {POLL_INTERVAL_S}s",
     )
 
@@ -367,7 +384,7 @@ async def run_continuous() -> None:
                 for k in sorted(total):
                     c = cache.get(k, {})
                     bucket_str = " ".join(
-                        f"{ck[:1].upper() if ck else '?'}:{v}"
+                        f"{ck[:1].upper() if ck else '-'}:{v}"
                         for ck, v in sorted(c.items(), key=lambda kv: -kv[1])
                     )
                     parts.append(f"{k}:{total[k]}({bucket_str})")

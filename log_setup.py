@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from logging.handlers import TimedRotatingFileHandler
 
 LOG_NAME = "announce_scanner"
 
@@ -115,6 +116,21 @@ def setup_logging(level: int | None = None) -> logging.Logger:
     handler.setLevel(level)
     handler.setFormatter(ColorFormatter())
     logger.addHandler(handler)
+
+    # File handler with daily rotation
+    os.makedirs("logs", exist_ok=True)
+    file_handler = TimedRotatingFileHandler(
+        "logs/announce_scanner.log",
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(level)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s  %(levelname)-5s %(message)s", datefmt="%H:%M:%S"),
+    )
+    logger.addHandler(file_handler)
 
     return logger
 

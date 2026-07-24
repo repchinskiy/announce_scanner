@@ -194,32 +194,18 @@ from websockets.exceptions import ConnectionClosed
 # Local import: shared Telegram notifier (fire-and-forget, no-op if unconfigured).
 from notifier import notifier
 
-# websockets API changed across versions: <14 used `extra_headers`,
-# 14+ uses `additional_headers`. Detect the supported kwarg once.
-try:
-    import inspect as _inspect
-    _ws_connect_kwargs = set(_inspect.signature(websockets.connect).parameters.keys())
-    if "additional_headers" in _ws_connect_kwargs:
-        _HEADERS_KWARG = "additional_headers"
-    elif "extra_headers" in _ws_connect_kwargs:
-        _HEADERS_KWARG = "extra_headers"
-    else:
-        _HEADERS_KWARG = "additional_headers"  # let it raise clearly if wrong
-except Exception:  # noqa: BLE001
-    _HEADERS_KWARG = "additional_headers"
-
 
 def ws_connect(url: str, headers: dict):
-    """Version-agnostic websockets.connect() wrapper."""
-    kwargs = {
-        _HEADERS_KWARG: headers,
-        "ping_interval": None,
-        "ping_timeout": None,
-        "close_timeout": 5,
-        "open_timeout": 10,
-        "max_size": None,
-    }
-    return websockets.connect(url, **kwargs)
+    """websockets.connect() wrapper."""
+    return websockets.connect(
+        url,
+        additional_headers=headers,
+        ping_interval=None,
+        ping_timeout=None,
+        close_timeout=5,
+        open_timeout=10,
+        max_size=None,
+    )
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -228,8 +214,8 @@ BASE_URL = "wss://api.binance.com/sapi/wss"
 TOPIC = os.environ.get("ANN_TOPIC", "com_announcement_en")
 RECV_WINDOW_MS = int(os.environ.get("ANN_RECV_WINDOW_MS", "30000"))
 
-# Catalog IDs to monitor. Default: 48 (New Cryptocurrency Listing == list/48).
-# Override via env: ANN_CATALOG_IDS=48,49,50,51,93,128,157,161
+# Catalog IDs to monitor. Default: 0 (ALL announcements — no filtering).
+# Override via env: WS_CATALOG_IDS=48,49,50,51,93,128,157,161
 # Set to 0 to disable filtering (print every English announcement).
 #
 # Known categories:
@@ -246,16 +232,11 @@ def _parse_catalog_ids(raw: str) -> set[int]:
     return {int(p) for p in parts}
 
 
-_raw_ids = os.environ.get("ANN_CATALOG_IDS", "48")
+_raw_ids = os.environ.get("WS_CATALOG_IDS", "0")
 FILTER_CATALOG_IDS: set[int] = _parse_catalog_ids(_raw_ids)
 # "0" means "monitor ALL categories" -> disable filtering entirely (empty set).
 if FILTER_CATALOG_IDS == {0}:
     FILTER_CATALOG_IDS = set()
-# Backward-compat: ANN_FILTER_CATALOG_ID (single value) still works if set.
-_single_legacy = os.environ.get("ANN_FILTER_CATALOG_ID")
-if _single_legacy:
-    _legacy_set = {int(_single_legacy)}
-    FILTER_CATALOG_IDS = set() if _legacy_set == {0} else _legacy_set
 
 PING_INTERVAL_S = 30          # docs: send PING every 30s, empty payload
 RECONNECT_MIN_S = 1.0
@@ -328,27 +309,27 @@ def handle_message(raw: str) -> None:
     # Command acks (SUBSCRIBE / UNSUBSCRIBE responses) are logged, not emitted.
     if msg.get("type") == "COMMAND":
         log.info(
-            "command ack subtype=%s code=%s data=%s",
+            "[WS] command ack subtype=%s code=%s data=%s",
             msg.get("subType"), msg.get("code"), msg.get("data"),
         )
         return
 
     # DATA frames carry announcement payloads.
     if msg.get("type") != "DATA":
-        log.info("non-data frame: %s", raw)
+        log.info("[WS] non-data frame: %s", raw)
         return
 
     topic = msg.get("topic")
     data_str = msg.get("data")
     if not isinstance(data_str, str):
-        log.warning("DATA frame without string data: %s", raw)
+        log.warning("[WS] DATA frame without string data: %s", raw)
         return
 
     # `data` is itself a JSON string -> unescape to get the announcement object.
     try:
         ann = json.loads(data_str)
     except json.JSONDecodeError as e:
-        log.warning("announcement data JSON decode error: %r raw=%s", e, data_str[:200])
+        log.warning("[WS] announcement data JSON decode error: %r raw=%s", e, data_str[:200])
         return
 
     catalog_id = ann.get("catalogId")
@@ -399,12 +380,12 @@ async def run() -> None:
     api_key = os.environ.get("BINANCE_API_KEY")
     api_secret = os.environ.get("BINANCE_API_SECRET")
     if not api_key or not api_secret:
-        log.error("BINANCE_API_KEY / BINANCE_API_SECRET env vars are required")
+        log.error("[WS] BINANCE_API_KEY / BINANCE_API_SECRET env vars are required")
         sys.exit(2)
 
     filter_label = ",".join(str(c) for c in sorted(FILTER_CATALOG_IDS)) if FILTER_CATALOG_IDS else "ALL"
     log.info(
-        "starting announce_scanner WS client topic=%s filter_catalog=%s base=%s",
+        "[WS] starting topic=%s filter_catalog=%s base=%s",
         TOPIC, filter_label, BASE_URL,
     )
     notifier.startup(
@@ -419,9 +400,9 @@ async def run() -> None:
         url = build_signed_url(api_secret)
         headers = {"X-MBX-APIKEY": api_key}
         try:
-            log.info("connecting...")
+            log.info("[WS] connecting...")
             async with ws_connect(url, headers) as ws:
-                log.info("connected; sending SUBSCRIBE")
+                log.info("[WS] connected; sending SUBSCRIBE")
                 # Docs require an explicit SUBSCRIBE for the topic (in addition
                 # to the topic param in URL). Belt-and-suspenders.
                 await ws.send(json.dumps({"command": "SUBSCRIBE", "value": TOPIC}))
@@ -434,7 +415,7 @@ async def run() -> None:
                         try:
                             # Docs recommend empty payload PING.
                             await ws.send("")
-                            log.debug("sent PING")
+                            log.debug("[WS] sent PING")
                         except ConnectionClosed:
                             return
 
@@ -451,13 +432,13 @@ async def run() -> None:
                     except (asyncio.CancelledError, ConnectionClosed):
                         pass
         except ConnectionClosed as e:
-            log.warning("ws closed: code=%s reason=%r", e.code, e.reason)
+            log.warning("[WS] closed: code=%s reason=%r", e.code, e.reason)
             notifier.reconnect("WS", f"code={e.code}")
         except Exception as e:  # noqa: BLE001 — keep client alive
-            log.warning("ws error: %r", e)
+            log.warning("[WS] error: %r", e)
             notifier.reconnect("WS", f"error={e!r}")
 
-        log.info("reconnecting in %.1fs", backoff)
+        log.info("[WS] reconnecting in %.1fs", backoff)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, RECONNECT_MAX_S)
 
@@ -466,7 +447,7 @@ def main() -> None:
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        log.info("stopped by user")
+        log.info("[WS] stopped by user")
         notifier.shutdown("WS", "interrupted by user")
         # Give fire-and-forget notifier tasks a moment to flush.
         try:

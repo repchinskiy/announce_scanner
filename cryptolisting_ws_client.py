@@ -56,14 +56,6 @@ except ImportError:
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-# websockets API: <14 used extra_headers, 14+ uses additional_headers.
-try:
-    import inspect as _inspect
-    _ws_kwargs = set(_inspect.signature(websockets.connect).parameters.keys())
-    _HEADERS_KWARG = "additional_headers" if "additional_headers" in _ws_kwargs else "extra_headers"
-except Exception:  # noqa: BLE001
-    _HEADERS_KWARG = "additional_headers"
-
 from notifier import notifier
 from log_setup import get_logger
 
@@ -143,7 +135,7 @@ async def run_tier(tier_name: str, token: str, send_test: bool) -> None:
         try:
             async with websockets.connect(
                 url,
-                **{_HEADERS_KWARG: headers},
+                additional_headers=headers,
                 ping_interval=None,  # server pings every 15s; library handles PONG
                 ping_timeout=None,
                 close_timeout=5,
