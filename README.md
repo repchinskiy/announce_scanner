@@ -28,9 +28,10 @@ Additional categories can be opted in via `ANN_CATALOG_IDS`:
 
 ## Architecture
 
-Six independent channels run in parallel. Each writes detections to stdout
-with a tag (`WS`, `CMS_APEX`, `CMS_COMPOSITE`, `EXCHANGE`, `SNIPER`, `CLWS`/
-`CLWD`), so real listings can be compared across sources.
+Eight independent channels run in parallel. Each writes detections to stdout
+with a tag (`WS`, `WS2`, `CMS_APEX`, `CMS_CATALOG`, `CMS_COMPOSITE`,
+`EXCHANGE`, `SNIPER`, `CLWS`/`CLWD`), so real listings can be compared
+across sources.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -41,7 +42,12 @@ with a tag (`WS`, `CMS_APEX`, `CMS_COMPOSITE`, `EXCHANGE`, `SNIPER`, `CLWS`/
 │  (primary channel)                wss://api.binance.com/sapi/wss     │
 │                                   HMAC-SHA256 signed subscription    │
 │                                   topic: com_announcement_en          │
-│                                   filter: catalogId in ANN_CATALOG_IDS│
+│                                   filter: catalogId in WS_CATALOG_IDS │
+│                                                                      │
+│  announce_ws2_client.py      ←── WS push (pub) ──→  target <100 ms  │
+│  (secondary WS channel)          wss://stream.binance.com:9443/ws/   │
+│                                   !announcements@arr (undocumented)   │
+│                                   no auth, public stream             │
 │                                                                      │
 │  cms_apex_poller.py          ←── CMS REST apex ──→  fallback ~60-120s│
 │  (fallback / comparison)         /bapi/apex/.../article/list/query  │
@@ -49,10 +55,15 @@ with a tag (`WS`, `CMS_APEX`, `CMS_COMPOSITE`, `EXCHANGE`, `SNIPER`, `CLWS`/
 │                                   adaptive interval (base + burst)    │
 │                                   state: ./state/cms_state.json       │
 │                                                                      │
-│  cms_composite_poller.py     ←── CMS REST composite ──→  comparison  │
-│  (cache-behavior comparison)      /bapi/composite/.../catalog/list    │
+│  cms_apex_catalog_poller.py  ←── CMS REST catalog ──→  comparison   │
+│  (catalog endpoint)              /bapi/apex/.../catalog/list/query  │
+│                                   flat articles, no releaseDate      │
+│                                   state: ./state/catalog_state.json   │
+│                                                                      │
+│  cms_composite_poller.py     ←── CMS REST composite ──→  comparison │
+│  (cache-behavior comparison)      /bapi/composite/.../catalog/list   │
 │                                   random pageSize 10..49 cache-buster│
-│                                   60s interval (Binance IP-ban limit) │
+│                                   60s interval (Binance IP-ban limit)│
 │                                   state: ./state/composite_state.json│
 │                                                                      │
 │  exchangeinfo_poller.py      ←── market data ──→  ~1-5 s            │
@@ -79,13 +90,18 @@ with a tag (`WS`, `CMS_APEX`, `CMS_COMPOSITE`, `EXCHANGE`, `SNIPER`, `CLWS`/
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Why six channels
+### Why eight channels
 
-- **WebSocket** is the only realistic path to `<150 ms`: it is a server push,
-  no polling, no CloudFront in the hot path.
+- **WebSocket (WS)** is the only realistic path to `<150 ms`: it is a server
+  push, no polling, no CloudFront in the hot path.
+- **WebSocket 2 (WS2)** is an undocumented public stream
+  (`!announcements@arr`) on `stream.binance.com:9443`. No auth required.
+  Runs as an independent comparison channel alongside the signed WS.
 - **CMS_APEX** (`/bapi/apex/...`) is a fallback/comparison channel.
   CloudFront-cached, bounded by CDN TTL (~60–120 s). Returns `releaseDate`
   (needed for latency calc).
+- **CMS_CATALOG** (`/bapi/apex/.../catalog/list/query`) is an alternative
+  apex path with flat articles. No `releaseDate` available.
 - **CMS_COMPOSITE** (`/bapi/composite/...`) is a comparison-only channel.
   Same CloudFront cache behaviour as apex, but does NOT return
   `releaseDate`. Used to validate that both CMS paths cache identically.
@@ -108,8 +124,10 @@ Channels split into two groups by what they detect:
 **Announcement events** (publication of news on Binance):
 | Channel | Source | What it detects |
 |---------|--------|-----------------|
-| `WS` | Binance Announcements WebSocket | Push of announcement publish event |
-| `CMS_APEX` | CMS REST (`/bapi/apex/...`) | New article in CMS (after CloudFront cache TTL) |
+| `WS` | Binance Announcements WebSocket (signed) | Push of announcement publish event |
+| `WS2` | Binance `!announcements@arr` (public stream) | Push of announcement publish event (undocumented) |
+| `CMS_APEX` | CMS REST (`/bapi/apex/.../list/query`) | New article in CMS (after CloudFront cache TTL) |
+| `CMS_CATALOG` | CMS REST (`/bapi/apex/.../catalog/list/query`) | New article in CMS (flat, no releaseDate) |
 | `CMS_COMPOSITE` | CMS REST (`/bapi/composite/...`) | New article in CMS (comparison channel) |
 | `CLWS` / `CLWD` | CryptoListing.ws WebSocket | Push from co-located detector covering listings, delistings, airdrops, monitoring tag changes |
 
@@ -125,10 +143,12 @@ Timeline of events for a typical listing:
 
 ```
 T=0    Binance publishes announcement
-       ├─ WS receives push                      ← <100ms
-       ├─ CMS_APEX sees in REST (after cache)    ← ~60-120s
-       ├─ CMS_COMPOSITE sees in REST             ← ~60-120s
-       └─ CLWS/CLWD receives push                ← 0ms / +240ms
+       ├─ WS receives push (signed)                ← <100ms
+       ├─ WS2 receives push (!announcements@arr)   ← <100ms
+       ├─ CMS_APEX sees in REST (after cache)      ← ~60-120s
+       ├─ CMS_CATALOG sees in REST                 ← ~60-120s
+       ├─ CMS_COMPOSITE sees in REST               ← ~60-120s
+       └─ CLWS/CLWD receives push                  ← 0ms / +240ms
 
 T+?    Symbol added to exchangeInfo
        └─ EXCHANGE detects                       ← ~1-5s (poll interval)
@@ -149,8 +169,10 @@ T+??   Matching engine starts, first price appears
 
 | File | Purpose |
 |------|---------|
-| `announce_ws_client.py` | Primary channel — Binance Announcements WebSocket client (HMAC-SHA256 signed subscription, PING every 30 s, exponential reconnect backoff). Filters by `catalogId in ANN_CATALOG_IDS`. |
+| `announce_ws_client.py` | Primary channel — Binance Announcements WebSocket client (HMAC-SHA256 signed subscription, PING every 30 s, exponential reconnect backoff). Filters by `catalogId in WS_CATALOG_IDS`. |
+| `announce_ws2_client.py` | Secondary WS channel — connects to undocumented public stream `!announcements@arr` on `stream.binance.com:9443`. No auth. Auto-subscribes via single-stream URL. |
 | `cms_apex_poller.py` | Fallback channel — parallel CMS REST (apex path) poller using 5 `pageSize` values as separate CloudFront cache keys. Adaptive interval (base + burst). Persists per-catalog `max_id` state to `./state/cms_state.json`; supports `--oneshot` and `--reset`. |
+| `cms_apex_catalog_poller.py` | Alternative CMS poller — hits `/bapi/apex/.../catalog/list/query` with flat articles. No `releaseDate`. Comparison-only channel. |
 | `cms_composite_poller.py` | Comparison channel — polls alternative CMS (composite path) `/bapi/composite/v1/public/cms/article/catalog/list/query` with random `pageSize` (10..49) cache-buster. 60s interval. Confirms identical CloudFront cache behaviour vs apex path. Persists `max_id` to `./state/composite_state.json`; supports `--oneshot` and `--reset`. |
 | `exchangeinfo_poller.py` | Backup channel — polls `GET /api/v3/exchangeInfo` on three hosts in parallel (CloudFront, GCP GLB, direct nginx) for new trading symbols. Persists the known symbol set to `./state/exchangeinfo_state.json`; supports `--oneshot` and `--reset`. |
 | `ticker_sniper.py` | Tradable-now signal — polls lightweight `GET /api/v3/ticker/price` (~150KB) on three hosts in parallel at high frequency. Default 1 Hz, tunable to 100 Hz. Adaptive 429 backoff. Persists the known symbol set to `./state/ticker_sniper_state.json`; supports `--oneshot` and `--reset`. |
@@ -187,9 +209,11 @@ BINANCE_API_SECRET=your_api_secret_here
 # Optional overrides:
 # ANN_TOPIC=com_announcement_en
 # ANN_RECV_WINDOW_MS=30000
-# ANN_CATALOG_IDS=48                              # default: 48 only
-# ANN_CATALOG_IDS=48,49,50,51,93,128,157,161     # monitor multiple categories
-# ANN_CATALOG_IDS=0                               # monitor ALL categories
+# WS_CATALOG_IDS=0                          # WS filter: 0 = all, default
+# WS_CATALOG_IDS=48                         # WS: listings only
+# ANN_CATALOG_IDS=48                        # CMS: default: 48 only
+# ANN_CATALOG_IDS=48,49,50,51,93,128,157,161 # CMS: multiple categories
+# ANN_CATALOG_IDS=0                          # CMS: monitor ALL categories
 
 # Telegram notifications (optional — notifier is a no-op if unset).
 # Create a bot via @BotFather, then get chat id (negative for groups).
@@ -241,11 +265,11 @@ python run.py
 Channels are selected via `ENABLED_CHANNELS` in `.env`:
 
 ```bash
-ENABLED_CHANNELS=all                    # all 6 channels
+ENABLED_CHANNELS=all                    # all 8 channels
 ENABLED_CHANNELS=all,!clws               # all except CryptoListing (while waiting for token)
-ENABLED_CHANNELS=ws,cms_apex            # lightweight: WS + CMS apex only
-ENABLED_CHANNELS=ws,sniper              # WS + sniper only
-ENABLED_CHANNELS=ws                     # WS only
+ENABLED_CHANNELS=ws,ws2,cms_apex        # lightweight: WS + WS2 + CMS apex only
+ENABLED_CHANNELS=ws,ws2,sniper          # WS + WS2 + sniper only
+ENABLED_CHANNELS=ws,ws2                 # WS + WS2 only
 ```
 
 Each channel runs as a separate asyncio task in the same event loop. They
@@ -256,8 +280,10 @@ compete for resources.
 ### Individual channels (debugging)
 
 ```bash
-python announce_ws_client.py             # primary (WS push)
+python announce_ws_client.py             # primary (WS push, signed)
+python announce_ws2_client.py            # secondary (WS push, public)
 python cms_apex_poller.py                # fallback (CMS apex REST)
+python cms_apex_catalog_poller.py       # comparison (CMS catalog REST)
 python exchangeinfo_poller.py           # backup (exchangeInfo, 3 hosts)
 python ticker_sniper.py                 # tradable-now (price ticker, 3 hosts)
 python cms_composite_poller.py          # comparison (alt CMS path, 60s)
@@ -267,12 +293,14 @@ python cryptolisting_client.py --test               # smoke test after welcome
 
 # One-shot checks
 python cms_apex_poller.py --oneshot
+python cms_apex_catalog_poller.py --oneshot
 python exchangeinfo_poller.py --oneshot
 python ticker_sniper.py --oneshot
 python cms_composite_poller.py --oneshot
 
 # Reset persisted state
 python cms_apex_poller.py --reset
+python cms_apex_catalog_poller.py --reset
 python exchangeinfo_poller.py --reset
 python ticker_sniper.py --reset
 python cms_composite_poller.py --reset
@@ -309,22 +337,23 @@ object per line), with fields: `received_ts_ms`, `publish_ts_ms`,
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `ENABLED_CHANNELS` | `all,!clws` | Comma-separated list of channels to run. Valid: `ws`, `cms_apex`, `exchange`, `sniper`, `cms_composite`, `clws`. Special: `all` (everything), `!name` (exclude one). |
+| `ENABLED_CHANNELS` | `all,!clws` | Comma-separated list of channels to run. Valid: `ws`, `ws2`, `cms_apex`, `cms_catalog`, `cms_composite`, `exchange`, `sniper`, `clws`. Special: `all` (everything), `!name` (exclude one). |
 | `CL_TIERS` | `both` | CryptoListing tiers: `both`, `speedtrial`, `freedelayed`. |
 | `CL_TEST` | `false` | Send `{"type":"test"}` 15s after CryptoListing welcome. |
 
 Examples:
 ```bash
-ENABLED_CHANNELS=all                    # all 6 channels
+ENABLED_CHANNELS=all                    # all 8 channels
 ENABLED_CHANNELS=all,!clws               # all except CryptoListing
-ENABLED_CHANNELS=ws,cms_apex,sniper     # WS + CMS apex + sniper
+ENABLED_CHANNELS=ws,ws2,cms_apex,sniper # WS + WS2 + CMS apex + sniper
 ```
 
 ### Shared env var (announcement channels)
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `ANN_CATALOG_IDS` | `48` | Comma-separated list of `catalogId` values to monitor. Set to `0` to monitor ALL categories. Example: `48,49,50,51,93,128,157,161`. |
+| `ANN_CATALOG_IDS` | `48` | Comma-separated list of `catalogId` values for **CMS pollers**. Set to `0` to monitor ALL categories. Example: `48,49,50,51,93,128,157,161`. |
+| `WS_CATALOG_IDS` | `0` | Comma-separated list of `catalogId` values for **WS channel**. Default `0` = all announcements pass through. Set to e.g. `48` to restrict WS to listings only. |
 
 ### WebSocket client (`announce_ws_client.py`)
 
@@ -334,8 +363,7 @@ ENABLED_CHANNELS=ws,cms_apex,sniper     # WS + CMS apex + sniper
 | `BINANCE_API_SECRET` | — | Binance API secret. Required. |
 | `ANN_TOPIC` | `com_announcement_en` | WS topic to subscribe to. |
 | `ANN_RECV_WINDOW_MS` | `30000` | Signature recvWindow, ms. Max 60000. |
-| `ANN_CATALOG_IDS` | `48` | See shared table above. |
-| `ANN_FILTER_CATALOG_ID` | *(unset)* | Legacy single-value override. If set, takes precedence over `ANN_CATALOG_IDS`. |
+| `WS_CATALOG_IDS` | `0` | Catalog filter for WS channel. `0` = all announcements. Example: `48,49` to restrict. |
 
 ### CMS apex poller (`cms_apex_poller.py`)
 
@@ -443,7 +471,7 @@ cycles, backoff is halved until it returns to the normal rate.
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `COMPOSITE_POLL_INTERVAL_S` | `60.0` | Interval between poll cycles (seconds). |
-| `ANN_CATALOG_IDS` | `48` | Shared with `cms_apex_poller.py`. Comma-separated `catalogId` list. Set to `0` for ALL known categories. |
+| `ANN_CATALOG_IDS` | `48` | Shared with `cms_apex_poller.py`. Comma-separated `catalogId` list for CMS pollers. Set to `0` for ALL known categories. WS channel has its own `WS_CATALOG_IDS`. |
 
 Polls the alternative CMS path
 `/bapi/composite/v1/public/cms/article/catalog/list/query` with a randomized
