@@ -31,3 +31,6 @@ research_report_tg.md
 
 # Local docs
 docs/cloud_front.md
+
+# Agent context memory (not for git, project-specific)
+CONTEXT.md
