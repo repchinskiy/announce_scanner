@@ -236,25 +236,40 @@ class Aggregator:
     # ------------------------------------------------------------------ #
     # Formatting
     # ------------------------------------------------------------------ #
+    def _extract_ps(self, ev: DetectionEvent) -> str | None:
+        """Return PS/preset label for CMS channels from extra data."""
+        if not ev.extra:
+            return None
+        if ev.channel == "CMS_APEX":
+            return ev.extra.get("key")
+        if ev.channel in ("CMS_CATALOG", "CMS_COMPOSITE"):
+            ps = ev.extra.get("page_size")
+            return f"PS{ps}" if ps is not None else None
+        return None
+
     def _format_group(self, events: list[DetectionEvent]) -> str:
         events.sort(key=lambda e: e.recv_ts_ms or 0)
         earliest = events[0].recv_ts_ms or 0
 
-        # Title from first event (all grouped items share the same title+catalog).
         raw_title = events[0].title or "(unknown)"
         title_safe = _escape_html(raw_title[:200] + ("…" if len(raw_title) > 200 else ""))
 
-        # Dynamic channel column width.
         max_ch = max((len(ev.channel) for ev in events), default=4)
         ch_width = max(max_ch, len("канал"))
 
+        # Have CMS rows? If yes, add a PS column.
+        has_ps = any(self._extract_ps(ev) is not None for ev in events)
+        ps_col = "  PS" if has_ps else ""
+
         lines = [f"🚀 <b>{title_safe}</b>", ""]
-        lines.append(f"<pre>{'канал':<{ch_width}}  recv              delta_ms")
+        lines.append(f"<pre>{'канал':<{ch_width}}  recv              delta_ms{ps_col}")
 
         for ev in events:
             recv_str = _fmt_recv(ev.recv_ts_ms or 0)
             delta = (ev.recv_ts_ms or 0) - earliest
-            lines.append(f"{ev.channel:<{ch_width}}  {recv_str:>16}  {delta} ms")
+            ps = self._extract_ps(ev)
+            ps_str = f"  {ps}" if ps else ""
+            lines.append(f"{ev.channel:<{ch_width}}  {recv_str:>16}  {delta} ms{ps_str}")
 
         lines.append("</pre>")
         return "\n".join(lines)
