@@ -37,6 +37,7 @@ try:
 except ImportError:
     pass
 
+from aggregator import aggregator
 from log_setup import setup_logging, get_logger
 from notifier import notifier
 
@@ -47,7 +48,7 @@ log = setup_logging()
 # ---------------------------------------------------------------------------
 # Channel registry
 # ---------------------------------------------------------------------------
-ALL_CHANNELS = ["ws", "ws2", "cms_apex", "exchange", "sniper", "cms_composite", "cms_catalog", "clws"]
+ALL_CHANNELS = ["ws", "cms_apex", "exchange", "sniper", "cms_composite", "cms_catalog", "clws"]
 
 
 # Each channel's runner is a lazy import so that a missing module (e.g. if
@@ -58,11 +59,6 @@ ALL_CHANNELS = ["ws", "ws2", "cms_apex", "exchange", "sniper", "cms_composite", 
 async def _run_ws() -> None:
     from announce_ws_client import run as ws_run
     await ws_run()
-
-
-async def _run_ws2() -> None:
-    from announce_ws2_client import run as ws2_run
-    await ws2_run()
 
 
 async def _run_cms_apex() -> None:
@@ -116,7 +112,6 @@ async def _run_clws() -> None:
 
 CHANNEL_RUNNERS: dict[str, Callable[[], Awaitable[None]]] = {
     "ws": _run_ws,
-    "ws2": _run_ws2,
     "cms_apex": _run_cms_apex,
     "exchange": _run_exchange,
     "sniper": _run_sniper,
@@ -188,6 +183,8 @@ async def main_async() -> None:
 
     log.info(f"starting channels: {','.join(enabled)}"
                 + (f" (skipped: {','.join(skipped)})" if skipped else ""))
+
+    aggregator.start()
 
     coros = []
     for ch in enabled:

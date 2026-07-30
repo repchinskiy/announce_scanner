@@ -192,6 +192,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 # Local import: shared Telegram notifier (fire-and-forget, no-op if unconfigured).
+from aggregator import aggregator
 from notifier import notifier
 
 
@@ -362,7 +363,7 @@ def handle_message(raw: str) -> None:
     log.info(f"🚀 NEW [WS] latency{fmt_latency(latency_ms)} catalog={catalog_id}/{catalog_name} title={ann.get('title')!r}")
 
     # Telegram notification (fire-and-forget, never blocks the hot path).
-    notifier.announcement(
+    aggregator.announcement(
         channel="WS",
         title=ann.get("title") or "",
         latency_ms=latency_ms,

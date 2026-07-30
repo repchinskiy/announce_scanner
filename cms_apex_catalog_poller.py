@@ -47,6 +47,7 @@ try:
 except ImportError:
     pass
 
+from aggregator import aggregator
 from notifier import notifier
 from log_setup import get_logger
 
@@ -239,7 +240,7 @@ async def poll_one(session: aiohttp.ClientSession,
             f"cache={cache_status}  ps={page_size}  "
             f"{title}"
         )
-        notifier.announcement(
+        aggregator.announcement(
             channel="CMS_CATALOG",
             title=title,
             latency_ms=None,  # no publishDate available

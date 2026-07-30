@@ -56,6 +56,7 @@ except ImportError:
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from aggregator import aggregator
 from notifier import notifier
 from log_setup import get_logger
 
@@ -266,7 +267,7 @@ def emit_announcement(msg: dict[str, Any], tag: str, tier_name: str,
 
     # Telegram notification (skip test messages).
     if not is_test:
-        notifier.announcement(
+        aggregator.announcement(
             channel=tag,
             title=f"{listing_type}: {ticker} ({publisher})" if ticker != "(redacted)"
                   else f"{listing_type} ({publisher})",

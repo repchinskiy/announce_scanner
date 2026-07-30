@@ -69,6 +69,7 @@ try:
 except ImportError:
     pass
 
+from aggregator import aggregator
 from notifier import notifier
 from log_setup import get_logger
 
@@ -219,7 +220,7 @@ async def poll_once(session,  # HttpClient (aiohttp or curl_cffi)
         log.info(
             f"🚀 NEW [EXCHANGE]  symbol={sym}  host={src_host}"
         )
-        notifier.announcement(
+        aggregator.announcement(
             channel="EXCHANGE",
             title=f"New symbol: {sym}",
             latency_ms=None,  # exchangeInfo has no listed_at field

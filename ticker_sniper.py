@@ -58,6 +58,7 @@ try:
 except ImportError:
     pass
 
+from aggregator import aggregator
 from notifier import notifier
 from log_setup import get_logger
 
@@ -204,7 +205,7 @@ async def poll_once(session: aiohttp.ClientSession,
         log.info(
             f"🚀 NEW [SNIPER]  symbol={sym}  host={src_host}"
         )
-        notifier.announcement(
+        aggregator.announcement(
             channel="SNIPER",
             title=f"New tradable symbol: {sym}",
             latency_ms=None,  # no listed_at timestamp in ticker/price

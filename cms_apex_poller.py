@@ -53,6 +53,7 @@ except ImportError:
 from http_client import create_http_client, get_backend
 
 # Local import: shared Telegram notifier (fire-and-forget, no-op if unconfigured).
+from aggregator import aggregator
 from notifier import notifier
 from log_setup import get_logger
 
@@ -272,7 +273,7 @@ async def poll_one(session: aiohttp.ClientSession,
             f"{title}"
         )
         # Telegram notification (fire-and-forget, never blocks the poll loop).
-        notifier.announcement(
+        aggregator.announcement(
             channel="CMS_APEX",
             title=title,
             latency_ms=latency,
