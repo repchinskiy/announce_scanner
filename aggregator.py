@@ -73,25 +73,24 @@ class DetectionEvent:
     extra: dict[str, Any] | None = None
 
 
-def _normalize_title(title: str) -> str:
-    """Normalize title for grouping: lowercase, strip punctuation."""
-    import re
-    t = title.lower().strip()
-    t = re.sub(r'[^\w\s]', '', t)  # remove punctuation
-    t = re.sub(r'\s+', ' ', t)     # collapse whitespace
-    return t
-
-
-def _group_key(ev: DetectionEvent) -> tuple[str, str]:
-    """Group by catalog_id + normalized title.
+def _best_title(events: list[DetectionEvent]) -> str:
+    """Pick the best title from events for display.
     
-    Events in the same 120-second window with the same catalog_id
-    and similar title (normalized) are grouped together.
+    Priority:
+    1. CLWS/CLWD extra["title"] (real title from CryptoListing feed)
+    2. WS/CMS title (real Binance title)
+    3. Fallback to first event's title
     """
-    return (
-        str(ev.catalog_id) if ev.catalog_id is not None else "",
-        _normalize_title(ev.title),
-    )
+    # CLWS/CLWD store real title in extra["title"]
+    for ev in events:
+        if ev.channel in ("CLWS", "CLWD") and ev.extra and ev.extra.get("title"):
+            return ev.extra["title"]
+    # WS/CMS have real title directly
+    for ev in events:
+        if ev.channel in ("WS", "CMS_APEX", "CMS_CATALOG", "CMS_COMPOSITE") and ev.title:
+            return ev.title
+    # Fallback
+    return events[0].title if events else "(unknown)"
 
 
 class Aggregator:
@@ -235,7 +234,7 @@ class Aggregator:
         log.info("[aggregator] event-driven flush enabled (window=%ds)", FLUSH_WINDOW_S)
 
     async def flush(self) -> None:
-        """Drain buffer, group by news item, send one aggregated msg per group."""
+        """Drain buffer, send one aggregated msg with all events in window."""
         if not self._buf:
             return
 
@@ -249,16 +248,11 @@ class Aggregator:
                 log.warning("[aggregator] notifier unavailable, dropping %d stats events", len(events))
                 return
 
-        groups: dict[tuple[str, str], list[DetectionEvent]] = defaultdict(list)
-        for ev in events:
-            groups[_group_key(ev)].append(ev)
-
-        for grouper, group_events in groups.items():
-            try:
-                text = self._format_group(group_events)
-                self._notifier._enqueue(text)
-            except Exception as e:  # noqa: BLE001
-                log.warning("[aggregator] failed to send group %s: %r", grouper, e)
+        try:
+            text = self._format_group(events)
+            self._notifier._enqueue(text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("[aggregator] failed to send aggregated stats: %r", e)
 
     # ------------------------------------------------------------------ #
     # Formatting
@@ -278,7 +272,7 @@ class Aggregator:
         events.sort(key=lambda e: e.recv_ts_ms or 0)
         earliest = events[0].recv_ts_ms or 0
 
-        raw_title = events[0].title or "(unknown)"
+        raw_title = _best_title(events)
         title_safe = _escape_html(raw_title[:200] + ("…" if len(raw_title) > 200 else ""))
 
         max_ch = max((len(ev.channel) for ev in events), default=4)
@@ -295,7 +289,7 @@ class Aggregator:
             recv_str = _fmt_recv(ev.recv_ts_ms or 0)
             delta = (ev.recv_ts_ms or 0) - earliest
             ps = self._extract_ps(ev)
-            ps_str = f"  {ps}" if ps else ""
+            ps_str = f"  {ps}" if ps else ("" if not has_ps else "  ")
             lines.append(f"{ev.channel:<{ch_width}}  {recv_str:>16}  {delta} ms{ps_str}")
 
         lines.append("</pre>")
