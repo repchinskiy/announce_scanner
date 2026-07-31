@@ -42,12 +42,12 @@ FLUSH_WINDOW_S = 120  # flush 120 seconds after first event in empty buffer.
 
 
 def _fmt_recv(epoch_ms: int) -> str:
-    """epoch ms → HH:MM:SS.mmm (UTC)."""
+    """epoch ms → SS.mmm (seconds.milliseconds only)."""
     if epoch_ms < 1_000_000_000_000:
         return str(epoch_ms)
     try:
         dt = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
-        return dt.strftime("%H:%M:%S.") + f"{epoch_ms % 1000:03d}"
+        return f"{dt.second:02d}.{epoch_ms % 1000:03d}"
     except (OSError, OverflowError, ValueError):
         return str(epoch_ms)
 
@@ -280,17 +280,17 @@ class Aggregator:
 
         # Have CMS rows? If yes, add a PS column.
         has_ps = any(self._extract_ps(ev) is not None for ev in events)
-        ps_col = "  PS" if has_ps else ""
+        ps_col = " PS" if has_ps else ""
 
         lines = [f"🚀 <b>{title_safe}</b>", ""]
-        lines.append(f"<pre>{'канал':<{ch_width}}  recv              delta_ms{ps_col}")
+        lines.append(f"<pre>{'канал':<{ch_width}} recv     delta{ps_col}")
 
         for ev in events:
             recv_str = _fmt_recv(ev.recv_ts_ms or 0)
             delta = (ev.recv_ts_ms or 0) - earliest
             ps = self._extract_ps(ev)
-            ps_str = f"  {ps}" if ps else ("" if not has_ps else "  ")
-            lines.append(f"{ev.channel:<{ch_width}}  {recv_str:>16}  {delta} ms{ps_str}")
+            ps_str = f" {ps}" if ps else (" " if has_ps else "")
+            lines.append(f"{ev.channel:<{ch_width}} {recv_str:<8} {delta:<5}{ps_str}")
 
         lines.append("</pre>")
         return "\n".join(lines)
