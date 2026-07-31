@@ -38,7 +38,7 @@ except ImportError:
 from log_setup import get_logger
 log = get_logger()
 
-FLUSH_INTERVAL_S = 60  # flush aggregated stats every 60 seconds.
+FLUSH_WINDOW_S = 120  # flush 120 seconds after first event in empty buffer.
 
 
 def _fmt_recv(epoch_ms: int) -> str:
@@ -73,10 +73,24 @@ class DetectionEvent:
     extra: dict[str, Any] | None = None
 
 
+def _normalize_title(title: str) -> str:
+    """Normalize title for grouping: lowercase, strip punctuation."""
+    import re
+    t = title.lower().strip()
+    t = re.sub(r'[^\w\s]', '', t)  # remove punctuation
+    t = re.sub(r'\s+', ' ', t)     # collapse whitespace
+    return t
+
+
 def _group_key(ev: DetectionEvent) -> tuple[str, str]:
+    """Group by catalog_id + normalized title.
+    
+    Events in the same 120-second window with the same catalog_id
+    and similar title (normalized) are grouped together.
+    """
     return (
         str(ev.catalog_id) if ev.catalog_id is not None else "",
-        ev.title,
+        _normalize_title(ev.title),
     )
 
 
@@ -92,6 +106,7 @@ class Aggregator:
         self._buf: list[DetectionEvent] = []
         self._notifier: Any = None  # resolved lazily
         self._task: Any = None
+        self._flush_scheduled: Any = None  # scheduled flush task handle
 
     # ------------------------------------------------------------------ #
     # Fire immediately + buffer for stats
@@ -135,6 +150,8 @@ class Aggregator:
             dispatch_ts_ms=dispatch_ts_ms,
             extra=extra,
         ))
+        # Schedule flush if buffer was empty (first event in window).
+        self._schedule_flush_if_needed()
 
     def _notify_immediate(self, **kwargs: Any) -> None:
         """Enqueue individual TG notification for speed.
@@ -187,25 +204,35 @@ class Aggregator:
         _n._enqueue("\n".join(lines))
 
     # ------------------------------------------------------------------ #
-    # Flush loop
+    # Flush scheduling (120-second window after first event)
+    # ------------------------------------------------------------------ #
+    def _schedule_flush_if_needed(self) -> None:
+        """If buffer had 1 event (was empty before this event), schedule flush in 120s."""
+        if len(self._buf) == 1 and self._flush_scheduled is None:
+            try:
+                loop = __import__("asyncio").get_running_loop()
+            except RuntimeError:
+                return
+            self._flush_scheduled = loop.create_task(self._delayed_flush())
+            log.info("[aggregator] first event in window, flush scheduled in %ds", FLUSH_WINDOW_S)
+
+    async def _delayed_flush(self) -> None:
+        """Wait 120s then flush buffer."""
+        import asyncio
+        await asyncio.sleep(FLUSH_WINDOW_S)
+        try:
+            await self.flush()
+        except Exception as e:  # noqa: BLE001
+            log.warning("[aggregator] flush error: %r", e)
+        finally:
+            self._flush_scheduled = None
+
+    # ------------------------------------------------------------------ #
+    # Flush loop (no-op now, flush is event-driven)
     # ------------------------------------------------------------------ #
     def start(self) -> None:
-        """Start the periodic flush loop (call from running asyncio loop)."""
-        try:
-            loop = __import__("asyncio").get_running_loop()
-        except RuntimeError:
-            return
-        self._task = loop.create_task(self._flush_loop())
-        log.info("[aggregator] flush loop started (interval=%ds)", FLUSH_INTERVAL_S)
-
-    async def _flush_loop(self) -> None:
-        import asyncio
-        while True:
-            await asyncio.sleep(FLUSH_INTERVAL_S)
-            try:
-                await self.flush()
-            except Exception as e:  # noqa: BLE001
-                log.warning("[aggregator] flush error: %r", e)
+        """No-op: flush is now event-driven (120s window after first event)."""
+        log.info("[aggregator] event-driven flush enabled (window=%ds)", FLUSH_WINDOW_S)
 
     async def flush(self) -> None:
         """Drain buffer, group by news item, send one aggregated msg per group."""
