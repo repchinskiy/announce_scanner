@@ -41,13 +41,24 @@ log = get_logger()
 FLUSH_WINDOW_S = 120  # flush 120 seconds after first event in empty buffer.
 
 
-def _fmt_recv(epoch_ms: int) -> str:
-    """epoch ms → SS.mmm (seconds.milliseconds only)."""
+def _fmt_recv_short(epoch_ms: int) -> str:
+    """epoch ms → SS.mmm (seconds.milliseconds only) for aggregated table."""
     if epoch_ms < 1_000_000_000_000:
         return str(epoch_ms)
     try:
         dt = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
         return f"{dt.second:02d}.{epoch_ms % 1000:03d}"
+    except (OSError, OverflowError, ValueError):
+        return str(epoch_ms)
+
+
+def _fmt_recv_full(epoch_ms: int) -> str:
+    """epoch ms → HH:MM:SS.mmm (full timestamp) for individual notifications."""
+    if epoch_ms < 1_000_000_000_000:
+        return str(epoch_ms)
+    try:
+        dt = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+        return dt.strftime("%H:%M:%S.") + f"{epoch_ms % 1000:03d}"
     except (OSError, OverflowError, ValueError):
         return str(epoch_ms)
 
@@ -188,7 +199,7 @@ class Aggregator:
             ("recv", kwargs.get("recv_ts_ms")),
         ]:
             if val is not None:
-                lines.append(f"{label}: {_fmt_recv(val)}")
+                lines.append(f"{label}: {_fmt_recv_full(val)}")
 
         if kwargs.get("catalog_id") is not None:
             lines.append(f"catalog: {kwargs['catalog_id']}")
@@ -286,7 +297,7 @@ class Aggregator:
         lines.append(f"<pre>{'канал':<{ch_width}} recv     delta{ps_col}")
 
         for ev in events:
-            recv_str = _fmt_recv(ev.recv_ts_ms or 0)
+            recv_str = _fmt_recv_short(ev.recv_ts_ms or 0)
             delta = (ev.recv_ts_ms or 0) - earliest
             ps = self._extract_ps(ev)
             ps_str = f" {ps}" if ps else (" " if has_ps else "")
